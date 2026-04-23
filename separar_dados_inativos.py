@@ -7,9 +7,8 @@ arquivo_saida = "Relatorio_Beneficiarios_Trimestral.xlsx"
 # Conectando...
 con = duckdb.connect('cache_processamento.db')
 
-print("--- Passo 1: Lendo e Verificando Dados ---")
+print("--- Passo 1: Lendo e Higienizando Dados (Modo Robusto) ---")
 
-# Vamos forçar a leitura da data e ver se o DuckDB consegue ler a primeira linha
 con.execute(f"""
     CREATE OR REPLACE TABLE base_limpa AS 
     SELECT 
@@ -17,16 +16,34 @@ con.execute(f"""
         CD_PLANO_RPS,
         CD_MUNICIPIO,
         TP_SEXO,
-        -- Tenta ler no formato brasileiro, se falhar tenta o ISO
-        COALESCE(try_cast(strptime(DT_NASCIMENTO, '%d/%m/%Y') AS DATE), try_cast(DT_NASCIMENTO AS DATE)) as DT_NASCIMENTO,
-        COALESCE(try_cast(strptime(DT_CONTRATACAO, '%d/%m/%Y') AS DATE), try_cast(DT_CONTRATACAO AS DATE)) as DT_CONTRATACAO,
-        COALESCE(try_cast(strptime(DT_CANCELAMENTO, '%d/%m/%Y') AS DATE), try_cast(DT_CANCELAMENTO AS DATE)) as DT_CANCELAMENTO
+        
+        -- Lógica para DT_NASCIMENTO (A mais problemática)
+        CASE 
+            WHEN DT_NASCIMENTO ~ '^\d{{2}}/\d{{2}}/\d{{4}}$' THEN strptime(DT_NASCIMENTO, '%d/%m/%Y')::DATE
+            WHEN DT_NASCIMENTO ~ '^\d{{4}}-\d{{2}}-\d{{2}}$' THEN DT_NASCIMENTO::DATE
+            WHEN DT_NASCIMENTO ~ '^\d{{4}}$' THEN (DT_NASCIMENTO || '-01-01')::DATE
+            ELSE try_cast(DT_NASCIMENTO AS DATE)
+        END as DT_NASCIMENTO,
+
+        -- Lógica para DT_CONTRATACAO
+        CASE 
+            WHEN DT_CONTRATACAO ~ '^\d{{2}}/\d{{2}}/\d{{4}}$' THEN strptime(DT_CONTRATACAO, '%d/%m/%Y')::DATE
+            WHEN DT_CONTRATACAO ~ '^\d{{4}}-\d{{2}}-\d{{2}}$' THEN DT_CONTRATACAO::DATE
+            ELSE try_cast(DT_CONTRATACAO AS DATE)
+        END as DT_CONTRATACAO,
+
+        -- Lógica para DT_CANCELAMENTO
+        CASE 
+            WHEN DT_CANCELAMENTO ~ '^\d{{2}}/\d{{2}}/\d{{4}}$' THEN strptime(DT_CANCELAMENTO, '%d/%m/%Y')::DATE
+            WHEN DT_CANCELAMENTO ~ '^\d{{4}}-\d{{2}}-\d{{2}}$' THEN DT_CANCELAMENTO::DATE
+            ELSE try_cast(DT_CANCELAMENTO AS DATE)
+        END as DT_CANCELAMENTO
+
     FROM read_csv('{arquivo_origem}', 
                   delim=';', 
                   header=True, 
                   all_varchar=True)
 """)
-
 # TESTE DE DIAGNÓSTICO: Vamos ver se a tabela tem dados
 check = con.execute("SELECT COUNT(*), COUNT(DT_CONTRATACAO) FROM base_limpa").fetchone()
 print(f"Total de linhas lidas: {check[0]}")
