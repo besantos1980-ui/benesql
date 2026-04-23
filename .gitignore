@@ -1,0 +1,10 @@
+# Dados grandes / brutos
+*.csv
+*.parquet
+*.xlsx
+*.zip
+
+# Python
+.venv/
+__pycache__/
+``
