@@ -1,37 +1,37 @@
 import duckdb
 import os
 
-# 1. Configurações de Caminho
+# ==============================================================================
+# 1. CONFIGURAÇÕES DE CAMINHO E AMBIENTE
+# ==============================================================================
 arquivo_origem = r"C:\inativos_ben\sib_inativo_SP.csv"
 pasta_saida = r"C:\inativos_ben\saida_trimestres"
+banco_local = 'processamento_ans.db' # Banco de dados em disco para suportar o volume
 
-# Cria a pasta de saída se não existir
 if not os.path.exists(pasta_saida):
     os.makedirs(pasta_saida)
 
-# Conecta ao DuckDB criando um arquivo de banco (evita estourar a RAM com 216M de linhas)
-con = duckdb.connect('processamento_ans.db')
+# Conecta ao banco local
+con = duckdb.connect(banco_local)
 
-print("--- Passo 1: Lendo e Higienizando 216 Milhões de Linhas (Versão Blindada) ---")
+# ==============================================================================
+# 2. PASSO 1: LEITURA E HIGIENIZAÇÃO (VERSÃO INDUSTRIAL)
+# ==============================================================================
+print("--- Passo 1: Lendo arquivo original (216 Milhões de Linhas) ---")
 
-# Criamos a tabela lendo tudo como VARCHAR primeiro para evitar erros de cast
-con.execute(r"""
+# Lemos tudo como texto (VARCHAR) para evitar quebras por formato
+con.execute(f"""
     CREATE OR REPLACE TABLE base_bruta AS 
-    SELECT * FROM read_csv('""" + arquivo_origem.replace('\\', '/') + r"""', 
+    SELECT * FROM read_csv('{arquivo_origem.replace('\\', '/')}', 
                   delim=';', 
                   header=True, 
                   all_varchar=True)
 """)
 
-print("--- Passo 1: Lendo e Higienizando (Lógica de Reconstrução de Data) ---")
+print("--- Passo 1.1: Higienizando e Reconstruindo Datas ---")
 
-# Criamos a bruta para não travar na leitura
-con.execute(f"""
-    CREATE OR REPLACE TABLE base_bruta AS 
-    SELECT * FROM read_csv('{arquivo_origem.replace('\\', '/')}', 
-                  delim=';', header=True, all_varchar=True)
-""")
-
+# Lógica ajustada: DT_NASCIMENTO recebe o ano e vira 01/01/AAAA
+# Contratação e Cancelamento seguem a lógica de reconstrução DDMMYYYY ou YYYYMM
 con.execute(r"""
     CREATE OR REPLACE TABLE base_limpa AS 
     SELECT 
@@ -40,20 +40,14 @@ con.execute(r"""
         CD_MUNICIPIO,
         TP_SEXO,
         
-        -- Função para limpar e converter qualquer formato (DD/MM/YYYY, YYYY-MM-DD ou YYYYMM)
-        -- Nascimento
+        -- Nascimento: Tratando apenas o ano (YYYY)
         CASE 
-            WHEN length(regexp_replace(DT_NASCIMENTO, '[^0-9]', '', 'g')) = 8 
-            THEN CAST(substring(regexp_replace(DT_NASCIMENTO, '[^0-9]', '', 'g'), 5, 4) || '-' ||
-                      substring(regexp_replace(DT_NASCIMENTO, '[^0-9]', '', 'g'), 3, 2) || '-' ||
-                      substring(regexp_replace(DT_NASCIMENTO, '[^0-9]', '', 'g'), 1, 2) AS DATE)
-            WHEN length(regexp_replace(DT_NASCIMENTO, '[^0-9]', '', 'g')) = 6
-            THEN CAST(substring(regexp_replace(DT_NASCIMENTO, '[^0-9]', '', 'g'), 1, 4) || '-' ||
-                      substring(regexp_replace(DT_NASCIMENTO, '[^0-9]', '', 'g'), 5, 2) || '-01' AS DATE)
+            WHEN length(regexp_replace(DT_NASCIMENTO, '[^0-9]', '', 'g')) = 4 
+            THEN CAST(regexp_replace(DT_NASCIMENTO, '[^0-9]', '', 'g') || '-01-01' AS DATE)
             ELSE try_cast(DT_NASCIMENTO AS DATE)
         END as DT_NASCIMENTO,
 
-        -- Contratação
+        -- Contratação: Reconstruindo formatos comuns da ANS
         CASE 
             WHEN length(regexp_replace(DT_CONTRATACAO, '[^0-9]', '', 'g')) = 8 
             THEN CAST(substring(regexp_replace(DT_CONTRATACAO, '[^0-9]', '', 'g'), 5, 4) || '-' ||
@@ -78,10 +72,17 @@ con.execute(r"""
         END as DT_CANCELAMENTO
     FROM base_bruta
 """)
-# Removendo a bruta para liberar espaço
+
 con.execute("DROP TABLE base_bruta")
 
-print("--- Passo 2: Exportando CSVs por Trimestre ---")
+# Verificação de segurança no console
+check = con.execute("SELECT COUNT(*), COUNT(DT_NASCIMENTO), COUNT(DT_CONTRATACAO) FROM base_limpa").fetchone()
+print(f"Total lido: {check[0]} | Nascimentos válidos: {check[1]} | Contratações válidas: {check[2]}")
+
+# ==============================================================================
+# 3. PASSO 2: CÁLCULO E EXPORTAÇÃO DOS CSVs
+# ==============================================================================
+print("--- Passo 2: Calculando Faixas Etárias e Exportando CSVs ---")
 
 trimestres = [
     ('1T2018', '2018-03-31'), ('2T2018', '2018-06-30'), ('3T2018', '2018-09-30'), ('4T2018', '2018-12-31'),
@@ -93,11 +94,10 @@ trimestres = [
     ('1T2024', '2024-03-31'), ('2T2024', '2024-06-30')
 ]
 
-for nome_aba, data_corte in trimestres:
-    arquivo_csv = os.path.join(pasta_saida, f"beneficiarios_ativos_{nome_aba}.csv")
-    print(f"Gerando {arquivo_csv}...")
+for nome, data_ref in trimestres:
+    arquivo_csv = os.path.join(pasta_saida, f"ativos_{nome}.csv")
+    print(f"Gerando relatório para {nome}...")
     
-    # Exportação direta do DuckDB para CSV (muito mais rápido que passar pelo Pandas)
     con.execute(f"""
         COPY (
             SELECT 
@@ -106,25 +106,27 @@ for nome_aba, data_corte in trimestres:
                 CD_MUNICIPIO as Municipio,
                 TP_SEXO as Sexo,
                 CASE 
-                    WHEN date_diff('year', DT_NASCIMENTO, CAST('{data_corte}' AS DATE)) < 1 THEN '<1 ano'
-                    WHEN date_diff('year', DT_NASCIMENTO, CAST('{data_corte}' AS DATE)) BETWEEN 1 AND 4 THEN '1 a 4 anos'
-                    WHEN date_diff('year', DT_NASCIMENTO, CAST('{data_corte}' AS DATE)) BETWEEN 5 AND 9 THEN '5 a 9 anos'
-                    WHEN date_diff('year', DT_NASCIMENTO, CAST('{data_corte}' AS DATE)) BETWEEN 10 AND 14 THEN '10 a 14 anos'
-                    WHEN date_diff('year', DT_NASCIMENTO, CAST('{data_corte}' AS DATE)) BETWEEN 15 AND 19 THEN '15 a 19 anos'
-                    WHEN date_diff('year', DT_NASCIMENTO, CAST('{data_corte}' AS DATE)) BETWEEN 20 AND 29 THEN '20 a 29 anos'
-                    WHEN date_diff('year', DT_NASCIMENTO, CAST('{data_corte}' AS DATE)) BETWEEN 30 AND 39 THEN '30 a 39 anos'
-                    WHEN date_diff('year', DT_NASCIMENTO, CAST('{data_corte}' AS DATE)) BETWEEN 40 AND 49 THEN '40 a 49 anos'
-                    WHEN date_diff('year', DT_NASCIMENTO, CAST('{data_corte}' AS DATE)) BETWEEN 50 AND 59 THEN '50 a 59 anos'
-                    WHEN date_diff('year', DT_NASCIMENTO, CAST('{data_corte}' AS DATE)) BETWEEN 60 AND 69 THEN '60 a 69 anos'
-                    WHEN date_diff('year', DT_NASCIMENTO, CAST('{data_corte}' AS DATE)) BETWEEN 70 AND 79 THEN '70 a 79 anos'
+                    WHEN DT_NASCIMENTO IS NULL THEN 'Indade Desconhecida'
+                    WHEN date_diff('year', DT_NASCIMENTO, CAST('{data_ref}' AS DATE)) < 1 THEN '<1 ano'
+                    WHEN date_diff('year', DT_NASCIMENTO, CAST('{data_ref}' AS DATE)) BETWEEN 1 AND 4 THEN '1 a 4 anos'
+                    WHEN date_diff('year', DT_NASCIMENTO, CAST('{data_ref}' AS DATE)) BETWEEN 5 AND 9 THEN '5 a 9 anos'
+                    WHEN date_diff('year', DT_NASCIMENTO, CAST('{data_ref}' AS DATE)) BETWEEN 10 AND 14 THEN '10 a 14 anos'
+                    WHEN date_diff('year', DT_NASCIMENTO, CAST('{data_ref}' AS DATE)) BETWEEN 15 AND 19 THEN '15 a 19 anos'
+                    WHEN date_diff('year', DT_NASCIMENTO, CAST('{data_ref}' AS DATE)) BETWEEN 20 AND 29 THEN '20 a 29 anos'
+                    WHEN date_diff('year', DT_NASCIMENTO, CAST('{data_ref}' AS DATE)) BETWEEN 30 AND 39 THEN '30 a 39 anos'
+                    WHEN date_diff('year', DT_NASCIMENTO, CAST('{data_ref}' AS DATE)) BETWEEN 40 AND 49 THEN '40 a 49 anos'
+                    WHEN date_diff('year', DT_NASCIMENTO, CAST('{data_ref}' AS DATE)) BETWEEN 50 AND 59 THEN '50 a 59 anos'
+                    WHEN date_diff('year', DT_NASCIMENTO, CAST('{data_ref}' AS DATE)) BETWEEN 60 AND 69 THEN '60 a 69 anos'
+                    WHEN date_diff('year', DT_NASCIMENTO, CAST('{data_ref}' AS DATE)) BETWEEN 70 AND 79 THEN '70 a 79 anos'
+                    WHEN date_diff('year', DT_NASCIMENTO, CAST('{data_ref}' AS DATE)) >= 80 THEN '80 anos ou mais'
                     ELSE '80 anos ou mais'
                 END as Faixa_Etaria,
-                COUNT(*) as Total_Beneficiarios
+                COUNT(*) as Total
             FROM base_limpa
-            WHERE DT_CONTRATACAO <= '{data_corte}'
-              AND (DT_CANCELAMENTO IS NULL OR DT_CANCELAMENTO > '{data_corte}')
+            WHERE DT_CONTRATACAO <= '{data_ref}'
+              AND (DT_CANCELAMENTO IS NULL OR DT_CANCELAMENTO > '{data_ref}')
             GROUP BY 1, 2, 3, 4, 5
         ) TO '{arquivo_csv.replace('\\', '/')}' (HEADER, DELIMITER ';')
     """)
 
-print("--- Processamento concluído com sucesso! ---")
+print(f"\n--- SUCESSO! Verifique os arquivos em: {pasta_saida} ---")
