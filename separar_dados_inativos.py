@@ -23,7 +23,14 @@ con.execute(r"""
                   all_varchar=True)
 """)
 
-print("--- Higienizando colunas de datas... ---")
+print("--- Passo 1: Lendo e Higienizando (Lógica de Reconstrução de Data) ---")
+
+# Criamos a bruta para não travar na leitura
+con.execute(f"""
+    CREATE OR REPLACE TABLE base_bruta AS 
+    SELECT * FROM read_csv('{arquivo_origem.replace('\\', '/')}', 
+                  delim=';', header=True, all_varchar=True)
+""")
 
 con.execute(r"""
     CREATE OR REPLACE TABLE base_limpa AS 
@@ -33,34 +40,44 @@ con.execute(r"""
         CD_MUNICIPIO,
         TP_SEXO,
         
-        -- Lógica: Extrai apenas dígitos. 
-        -- Se tiver 8 dígitos (DDMMYYYY), tenta converter. 
-        -- Se tiver 4 (YYYY), vira 01/01. 
-        -- Se falhar, usa o try_cast padrão do DuckDB.
+        -- Função para limpar e converter qualquer formato (DD/MM/YYYY, YYYY-MM-DD ou YYYYMM)
+        -- Nascimento
         CASE 
-            WHEN DT_NASCIMENTO ~ '^\d{2}/\d{2}/\d{4}$' THEN CAST(strptime(DT_NASCIMENTO, '%d/%m/%Y') AS DATE)
-            WHEN DT_NASCIMENTO ~ '^\d{4}-\d{2}-\d{2}$' THEN TRY_CAST(DT_NASCIMENTO AS DATE)
-            WHEN DT_NASCIMENTO ~ '^\d{4}$' THEN TRY_CAST(DT_NASCIMENTO || '-01-01' AS DATE)
-            ELSE TRY_CAST(DT_NASCIMENTO AS DATE)
+            WHEN length(regexp_replace(DT_NASCIMENTO, '[^0-9]', '', 'g')) = 8 
+            THEN CAST(substring(regexp_replace(DT_NASCIMENTO, '[^0-9]', '', 'g'), 5, 4) || '-' ||
+                      substring(regexp_replace(DT_NASCIMENTO, '[^0-9]', '', 'g'), 3, 2) || '-' ||
+                      substring(regexp_replace(DT_NASCIMENTO, '[^0-9]', '', 'g'), 1, 2) AS DATE)
+            WHEN length(regexp_replace(DT_NASCIMENTO, '[^0-9]', '', 'g')) = 6
+            THEN CAST(substring(regexp_replace(DT_NASCIMENTO, '[^0-9]', '', 'g'), 1, 4) || '-' ||
+                      substring(regexp_replace(DT_NASCIMENTO, '[^0-9]', '', 'g'), 5, 2) || '-01' AS DATE)
+            ELSE try_cast(DT_NASCIMENTO AS DATE)
         END as DT_NASCIMENTO,
 
+        -- Contratação
         CASE 
-            WHEN DT_CONTRATACAO ~ '^\d{2}/\d{2}/\d{4}$' THEN CAST(strptime(DT_CONTRATACAO, '%d/%m/%Y') AS DATE)
-            WHEN DT_CONTRATACAO ~ '^\d{4}-\d{2}-\d{2}$' THEN TRY_CAST(DT_CONTRATACAO AS DATE)
-            WHEN DT_CONTRATACAO ~ '^\d{4}$' THEN TRY_CAST(DT_CONTRATACAO || '-01-01' AS DATE)
-            ELSE TRY_CAST(DT_CONTRATACAO AS DATE)
+            WHEN length(regexp_replace(DT_CONTRATACAO, '[^0-9]', '', 'g')) = 8 
+            THEN CAST(substring(regexp_replace(DT_CONTRATACAO, '[^0-9]', '', 'g'), 5, 4) || '-' ||
+                      substring(regexp_replace(DT_CONTRATACAO, '[^0-9]', '', 'g'), 3, 2) || '-' ||
+                      substring(regexp_replace(DT_CONTRATACAO, '[^0-9]', '', 'g'), 1, 2) AS DATE)
+            WHEN length(regexp_replace(DT_CONTRATACAO, '[^0-9]', '', 'g')) = 6
+            THEN CAST(substring(regexp_replace(DT_CONTRATACAO, '[^0-9]', '', 'g'), 1, 4) || '-' ||
+                      substring(regexp_replace(DT_CONTRATACAO, '[^0-9]', '', 'g'), 5, 2) || '-01' AS DATE)
+            ELSE try_cast(DT_CONTRATACAO AS DATE)
         END as DT_CONTRATACAO,
 
+        -- Cancelamento
         CASE 
-            WHEN DT_CANCELAMENTO ~ '^\d{2}/\d{2}/\d{4}$' THEN CAST(strptime(DT_CANCELAMENTO, '%d/%m/%Y') AS DATE)
-            WHEN DT_CANCELAMENTO ~ '^\d{4}-\d{2}-\d{2}$' THEN TRY_CAST(DT_CANCELAMENTO AS DATE)
-            WHEN DT_CANCELAMENTO ~ '^\d{4}$' THEN TRY_CAST(DT_CANCELAMENTO || '-01-01' AS DATE)
-            ELSE TRY_CAST(DT_CANCELAMENTO AS DATE)
+            WHEN length(regexp_replace(DT_CANCELAMENTO, '[^0-9]', '', 'g')) = 8 
+            THEN CAST(substring(regexp_replace(DT_CANCELAMENTO, '[^0-9]', '', 'g'), 5, 4) || '-' ||
+                      substring(regexp_replace(DT_CANCELAMENTO, '[^0-9]', '', 'g'), 3, 2) || '-' ||
+                      substring(regexp_replace(DT_CANCELAMENTO, '[^0-9]', '', 'g'), 1, 2) AS DATE)
+            WHEN length(regexp_replace(DT_CANCELAMENTO, '[^0-9]', '', 'g')) = 6
+            THEN CAST(substring(regexp_replace(DT_CANCELAMENTO, '[^0-9]', '', 'g'), 1, 4) || '-' ||
+                      substring(regexp_replace(DT_CANCELAMENTO, '[^0-9]', '', 'g'), 5, 2) || '-01' AS DATE)
+            ELSE try_cast(DT_CANCELAMENTO AS DATE)
         END as DT_CANCELAMENTO
-
     FROM base_bruta
 """)
-
 # Removendo a bruta para liberar espaço
 con.execute("DROP TABLE base_bruta")
 
