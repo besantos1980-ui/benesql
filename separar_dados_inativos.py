@@ -3,7 +3,7 @@ import pandas as pd
 import os
 
 # 1. Configurações de Caminho
-arquivo_origem = r"C:/inativos_ben/seu_arquivo.csv" # Use o 'r' antes das aspas para caminhos Windows
+arquivo_origem = r"C:/inativos_ben/sib_inativo_SP.csv" # Use o 'r' antes das aspas para caminhos Windows
 arquivo_saida = "Relatorio_Beneficiarios_Trimestral.xlsx"
 
 # Conecta ao DuckDB (criando um arquivo de banco local para não estourar a RAM)
