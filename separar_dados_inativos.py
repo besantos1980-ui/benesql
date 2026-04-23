@@ -2,7 +2,7 @@ import duckdb
 import pandas as pd
 
 # 1. Configuração inicial
-arquivo_origem = "C:\inativos_ben\sib_inativo_*.csv"
+arquivo_origem = r"C:\inativos_ben\sib_inativo_*.csv"
 arquivo_saida = "Relatorio_Beneficiarios_Trimestral.xlsx"
 
 con = duckdb.connect(':memory:') # Para 50GB, o DuckDB gerencia o cache em disco automaticamente
