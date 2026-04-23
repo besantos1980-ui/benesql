@@ -2,7 +2,7 @@ import duckdb
 import os
 
 # 1. Configurações de Caminho
-arquivo_origem = r"C:\inativos_ben\sib_inativos_SP.csv"
+arquivo_origem = r"C:\inativos_ben\sib_inativo_SP.csv"
 pasta_saida = r"C:\inativos_ben\saida_trimestres"
 
 # Cria a pasta de saída se não existir
