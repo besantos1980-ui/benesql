@@ -1,14 +1,36 @@
 import duckdb
 import pandas as pd
+import os
 
-# 1. Configuração inicial
-arquivo_origem = r"C:/inativos_ben/sib_inativo_*.csv"
+# 1. Configurações de Caminho
+arquivo_origem = r"C:/inativos_ben/seu_arquivo.csv" # Use o 'r' antes das aspas para caminhos Windows
 arquivo_saida = "Relatorio_Beneficiarios_Trimestral.xlsx"
 
-con = duckdb.connect(':memory:') # Para 50GB, o DuckDB gerencia o cache em disco automaticamente
+# Conecta ao DuckDB (criando um arquivo de banco local para não estourar a RAM)
+con = duckdb.connect('cache_processamento.db')
 
-# 2. Gerar lista de trimestres (Datas de corte)
-# Usaremos o último dia de cada trimestre
+print("--- Passo 1: Criando cache otimizado (Isso pode demorar um pouco, mas só roda 1 vez) ---")
+
+# Criamos uma tabela temporária tratando as datas "sujas"
+# O try_cast converte o que for possível e retorna NULL para o que for inválido (como '2012-07')
+con.execute(f"""
+    CREATE OR REPLACE TABLE base_limpa AS 
+    SELECT 
+        REGISTRO_OPERADORA,
+        CD_PLANO_RPS,
+        CD_MUNICIPIO,
+        TP_SEXO,
+        try_cast(DT_NASCIMENTO AS DATE) as DT_NASCIMENTO,
+        try_cast(DT_CONTRATACAO AS DATE) as DT_CONTRATACAO,
+        try_cast(DT_CANCELAMENTO AS DATE) as DT_CANCELAMENTO
+    FROM read_csv('{arquivo_origem}', 
+                  delim=';', 
+                  header=True, 
+                  all_varchar=True) -- Lê tudo como texto primeiro para evitar erro de tipo
+""")
+
+print("--- Passo 2: Gerando Abas por Trimestre ---")
+
 trimestres = [
     ('1T2018', '2018-03-31'), ('2T2018', '2018-06-30'), ('3T2018', '2018-09-30'), ('4T2018', '2018-12-31'),
     ('1T2019', '2019-03-31'), ('2T2019', '2019-06-30'), ('3T2019', '2019-09-30'), ('4T2019', '2019-12-31'),
@@ -21,26 +43,20 @@ trimestres = [
 
 with pd.ExcelWriter(arquivo_saida, engine='xlsxwriter') as writer:
     for nome_aba, data_corte in trimestres:
-        print(f"Processando {nome_aba} (Referência: {data_corte})...")
+        print(f"Processando {nome_aba}...")
         
-        # SQL robusto para processar 50GB colunarmente
         query = f"""
-        WITH base_ativa AS (
+        WITH ativos AS (
             SELECT 
-                REGISTRO_OPERADORA,
-                CD_PLANO_RPS,
-                CD_MUNICIPIO,
-                TP_SEXO,
-                -- Cálculo de idade na data de corte
-                date_diff('year', CAST(DT_NASCIMENTO AS DATE), CAST('{data_corte}' AS DATE)) as idade
-            FROM read_csv_auto('{arquivo_origem}')
-            WHERE 
-                -- Lógica de Ativo: Contratado antes da data E (não cancelado OU cancelado depois da data)
-                CAST(DT_CONTRATACAO AS DATE) <= CAST('{data_corte}' AS DATE)
-                AND (DT_CANCELAMENTO IS NULL OR CAST(DT_CANCELAMENTO AS DATE) > CAST('{data_corte}' AS DATE))
+                REGISTRO_OPERADORA, CD_PLANO_RPS, CD_MUNICIPIO, TP_SEXO,
+                date_diff('year', DT_NASCIMENTO, CAST('{data_corte}' AS DATE)) as idade
+            FROM base_limpa
+            WHERE DT_CONTRATACAO <= '{data_corte}'
+              AND (DT_CANCELAMENTO IS NULL OR DT_CANCELAMENTO > '{data_corte}')
         ),
-        faixas AS (
-            SELECT *,
+        agrupado AS (
+            SELECT 
+                REGISTRO_OPERADORA, CD_PLANO_RPS, CD_MUNICIPIO, TP_SEXO,
                 CASE 
                     WHEN idade < 1 THEN '<1 ano'
                     WHEN idade BETWEEN 1 AND 4 THEN '1 a 4 anos'
@@ -55,7 +71,7 @@ with pd.ExcelWriter(arquivo_saida, engine='xlsxwriter') as writer:
                     WHEN idade BETWEEN 70 AND 79 THEN '70 a 79 anos'
                     ELSE '80 anos ou mais'
                 END as FAIXA_ETARIA
-            FROM base_ativa
+            FROM ativos
         )
         SELECT 
             REGISTRO_OPERADORA as Operadora,
@@ -64,11 +80,11 @@ with pd.ExcelWriter(arquivo_saida, engine='xlsxwriter') as writer:
             TP_SEXO as Sexo,
             FAIXA_ETARIA as Faixa_Etaria,
             COUNT(*) as Total_Beneficiarios
-        FROM faixas
+        FROM agrupado
         GROUP BY 1, 2, 3, 4, 5
         """
         
-        df_trimestre = con.execute(query).df()
-        df_trimestre.to_excel(writer, sheet_name=nome_aba, index=False)
+        df = con.execute(query).df()
+        df.to_excel(writer, sheet_name=nome_aba, index=False)
 
-print(f"Sucesso! Arquivo gerado: {arquivo_saida}")
+print(f"Concluído! Arquivo salvo em: {arquivo_saida}")
