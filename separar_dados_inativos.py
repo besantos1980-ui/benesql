@@ -46,7 +46,6 @@ for row in amostra:
 # DuckDB: strptime/try_strptime + exemplos de %d/%m/%Y estão na documentação. [1](https://duckdb.org/docs/current/sql/functions/dateformat)
 # DuckDB: regexp_replace com flag 'g' (global) é suportado. [2](https://duckdb.org/docs/current/sql/functions/regular_expressions)
 con.execute(r"""
-con.execute(r"""
 CREATE OR REPLACE TABLE base_limpa AS
 WITH src AS (
     SELECT
@@ -67,7 +66,6 @@ conv AS (
         CASE
             WHEN DT_NASCIMENTO IS NULL OR trim(DT_NASCIMENTO) = '' THEN NULL
             WHEN length(nasc_num) = 4 THEN try_cast(nasc_num || '-01-01' AS DATE)
-
             -- YYYY-MM  -> YYYY-MM-01
             WHEN regexp_full_match(trim(DT_NASCIMENTO), '^\d{4}-\d{2}$')
                 THEN try_cast(trim(DT_NASCIMENTO) || '-01' AS DATE)
