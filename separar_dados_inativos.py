@@ -143,4 +143,3 @@ for nome, data_ref in trimestres:
 
 print("Trimestres gerados.")
 con.close()
-``
