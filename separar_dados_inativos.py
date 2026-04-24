@@ -46,6 +46,7 @@ for row in amostra:
 # DuckDB: strptime/try_strptime + exemplos de %d/%m/%Y estão na documentação. [1](https://duckdb.org/docs/current/sql/functions/dateformat)
 # DuckDB: regexp_replace com flag 'g' (global) é suportado. [2](https://duckdb.org/docs/current/sql/functions/regular_expressions)
 con.execute(r"""
+con.execute(r"""
 CREATE OR REPLACE TABLE base_limpa AS
 WITH src AS (
     SELECT
@@ -62,51 +63,72 @@ conv AS (
         CD_MUNICIPIO,
         TP_SEXO,
 
-        -- NASCIMENTO (aceita ano isolado AAAA e datas com ou sem hora)
+        -- NASCIMENTO: aceita AAAA, YYYY-MM, dd/mm/aaaa, yyyy-mm-dd (com/sem hora)
         CASE
             WHEN DT_NASCIMENTO IS NULL OR trim(DT_NASCIMENTO) = '' THEN NULL
             WHEN length(nasc_num) = 4 THEN try_cast(nasc_num || '-01-01' AS DATE)
+
+            -- YYYY-MM  -> YYYY-MM-01
+            WHEN regexp_full_match(trim(DT_NASCIMENTO), '^\d{4}-\d{2}$')
+                THEN try_cast(trim(DT_NASCIMENTO) || '-01' AS DATE)
+
             ELSE
                 CAST(
                     coalesce(
-                        try_strptime(DT_NASCIMENTO, '%d/%m/%Y'),
-                        try_strptime(DT_NASCIMENTO, '%d/%m/%Y %H:%M:%S'),
-                        try_strptime(DT_NASCIMENTO, '%Y-%m-%d'),
-                        try_strptime(DT_NASCIMENTO, '%Y-%m-%d %H:%M:%S'),
-                        try_strptime(substr(nasc_num, 1, 8), '%d%m%Y'),
-                        try_strptime(substr(nasc_num, 1, 8), '%Y%m%d')
+                        try_strptime(trim(DT_NASCIMENTO), '%d/%m/%Y'),
+                        try_strptime(trim(DT_NASCIMENTO), '%d/%m/%Y %H:%M:%S'),
+                        try_strptime(trim(DT_NASCIMENTO), '%Y-%m-%d'),
+                        try_strptime(trim(DT_NASCIMENTO), '%Y-%m-%d %H:%M:%S'),
+
+                        -- só tenta numérico se tiver pelo menos 8 dígitos
+                        CASE WHEN length(nasc_num) >= 8 THEN try_strptime(substr(nasc_num, 1, 8), '%d%m%Y') END,
+                        CASE WHEN length(nasc_num) >= 8 THEN try_strptime(substr(nasc_num, 1, 8), '%Y%m%d') END
                     ) AS DATE
                 )
         END AS DT_NASCIMENTO,
 
-        -- CONTRATACAO (dd/mm/aaaa é o principal)
+        -- CONTRATAÇÃO: principal é YYYY-MM; secundário dd/mm/aaaa etc.
         CASE
             WHEN DT_CONTRATACAO IS NULL OR trim(DT_CONTRATACAO) = '' THEN NULL
+
+            -- YYYY-MM -> YYYY-MM-01
+            WHEN regexp_full_match(trim(DT_CONTRATACAO), '^\d{4}-\d{2}$')
+                THEN try_cast(trim(DT_CONTRATACAO) || '-01' AS DATE)
+
             ELSE
                 CAST(
                     coalesce(
-                        try_strptime(DT_CONTRATACAO, '%d/%m/%Y'),
-                        try_strptime(DT_CONTRATACAO, '%d/%m/%Y %H:%M:%S'),
-                        try_strptime(DT_CONTRATACAO, '%Y-%m-%d'),
-                        try_strptime(DT_CONTRATACAO, '%Y-%m-%d %H:%M:%S'),
-                        try_strptime(substr(cont_num, 1, 8), '%d%m%Y'),
-                        try_strptime(substr(cont_num, 1, 8), '%Y%m%d')
+                        try_strptime(trim(DT_CONTRATACAO), '%d/%m/%Y'),
+                        try_strptime(trim(DT_CONTRATACAO), '%d/%m/%Y %H:%M:%S'),
+                        try_strptime(trim(DT_CONTRATACAO), '%Y-%m-%d'),
+                        try_strptime(trim(DT_CONTRATACAO), '%Y-%m-%d %H:%M:%S'),
+
+                        CASE WHEN length(cont_num) >= 8 THEN try_strptime(substr(cont_num, 1, 8), '%d%m%Y') END,
+                        CASE WHEN length(cont_num) >= 8 THEN try_strptime(substr(cont_num, 1, 8), '%Y%m%d') END
                     ) AS DATE
                 )
         END AS DT_CONTRATACAO,
 
-        -- CANCELAMENTO (dd/mm/aaaa é o principal)
+        -- CANCELAMENTO: se YYYY-MM, usa ÚLTIMO dia do mês (convenção p/ "ativo no mês")
         CASE
             WHEN DT_CANCELAMENTO IS NULL OR trim(DT_CANCELAMENTO) = '' THEN NULL
+
+            WHEN regexp_full_match(trim(DT_CANCELAMENTO), '^\d{4}-\d{2}$') THEN
+                CAST(
+                    (date_trunc('month', try_cast(trim(DT_CANCELAMENTO) || '-01' AS DATE))
+                     + INTERVAL '1 month' - INTERVAL '1 day') AS DATE
+                )
+
             ELSE
                 CAST(
                     coalesce(
-                        try_strptime(DT_CANCELAMENTO, '%d/%m/%Y'),
-                        try_strptime(DT_CANCELAMENTO, '%d/%m/%Y %H:%M:%S'),
-                        try_strptime(DT_CANCELAMENTO, '%Y-%m-%d'),
-                        try_strptime(DT_CANCELAMENTO, '%Y-%m-%d %H:%M:%S'),
-                        try_strptime(substr(canc_num, 1, 8), '%d%m%Y'),
-                        try_strptime(substr(canc_num, 1, 8), '%Y%m%d')
+                        try_strptime(trim(DT_CANCELAMENTO), '%d/%m/%Y'),
+                        try_strptime(trim(DT_CANCELAMENTO), '%d/%m/%Y %H:%M:%S'),
+                        try_strptime(trim(DT_CANCELAMENTO), '%Y-%m-%d'),
+                        try_strptime(trim(DT_CANCELAMENTO), '%Y-%m-%d %H:%M:%S'),
+
+                        CASE WHEN length(canc_num) >= 8 THEN try_strptime(substr(canc_num, 1, 8), '%d%m%Y') END,
+                        CASE WHEN length(canc_num) >= 8 THEN try_strptime(substr(canc_num, 1, 8), '%Y%m%d') END
                     ) AS DATE
                 )
         END AS DT_CANCELAMENTO
