@@ -4,7 +4,7 @@ import os
 # CONFIGURAÇÕES
 arquivo_origem = r"C:\inativos_ben\sib_inativo_SP.csv"
 pasta_saida = r"C:\inativos_ben\saida_trimestres"
-banco_local = r"C:\inativos_ben\processamento_ans.db"  # fixo e absoluto para não abrir db errado
+banco_local = r"C:\inativos_ben\processamento_ans.db"  # caminho absoluto
 
 if not os.path.exists(pasta_saida):
     os.makedirs(pasta_saida)
@@ -13,7 +13,6 @@ con = duckdb.connect(banco_local)
 
 print("--- Passo 1: Lendo e Higienizando ---")
 
-# 1) Carrega o CSV cru
 con.execute(f"""
     CREATE OR REPLACE TABLE base_bruta AS
     SELECT * FROM read_csv(
@@ -24,10 +23,28 @@ con.execute(f"""
     )
 """)
 
-# 2) Cria base_limpa com parsing robusto (BR -> ISO)
-#    - Remove tudo que não é dígito
-#    - Para 8 dígitos assume DDMMAAAA (padrão comum em bases nacionais)
-#    - Para 4 dígitos em nascimento assume ano (AAAA -> AAAA-01-01)
+# Diagnóstico rápido (amostra) para confirmar formato real:
+print("--- Amostra DT_CONTRATACAO / DT_CANCELAMENTO (raw) ---")
+amostra = con.execute(r"""
+    SELECT
+        DT_CONTRATACAO,
+        DT_CANCELAMENTO
+    FROM base_bruta
+    WHERE (DT_CONTRATACAO IS NOT NULL AND trim(DT_CONTRATACAO) <> '')
+       OR (DT_CANCELAMENTO IS NOT NULL AND trim(DT_CANCELAMENTO) <> '')
+    LIMIT 20
+""").fetchall()
+for row in amostra:
+    print(row)
+
+# Parsing robusto com try_strptime:
+# - prioriza dd/mm/aaaa
+# - aceita timestamp com hora
+# - fallback para yyyy-mm-dd e variações
+# - fallback para strings numéricas (pega só os 8 primeiros dígitos)
+#
+# DuckDB: strptime/try_strptime + exemplos de %d/%m/%Y estão na documentação. [1](https://duckdb.org/docs/current/sql/functions/dateformat)
+# DuckDB: regexp_replace com flag 'g' (global) é suportado. [2](https://duckdb.org/docs/current/sql/functions/regular_expressions)
 con.execute(r"""
 CREATE OR REPLACE TABLE base_limpa AS
 WITH src AS (
@@ -37,45 +54,68 @@ WITH src AS (
         regexp_replace(DT_CONTRATACAO,  '[^0-9]', '', 'g') AS cont_num,
         regexp_replace(DT_CANCELAMENTO, '[^0-9]', '', 'g') AS canc_num
     FROM base_bruta
+),
+conv AS (
+    SELECT
+        COALESCE(NULLIF(trim(CD_PLANO_RPS), ''), 'PRODUTO NÃO IDENTIFICADO') AS Produto,
+        REGISTRO_OPERADORA,
+        CD_MUNICIPIO,
+        TP_SEXO,
+
+        -- NASCIMENTO (aceita ano isolado AAAA e datas com ou sem hora)
+        CASE
+            WHEN DT_NASCIMENTO IS NULL OR trim(DT_NASCIMENTO) = '' THEN NULL
+            WHEN length(nasc_num) = 4 THEN try_cast(nasc_num || '-01-01' AS DATE)
+            ELSE
+                CAST(
+                    coalesce(
+                        try_strptime(DT_NASCIMENTO, '%d/%m/%Y'),
+                        try_strptime(DT_NASCIMENTO, '%d/%m/%Y %H:%M:%S'),
+                        try_strptime(DT_NASCIMENTO, '%Y-%m-%d'),
+                        try_strptime(DT_NASCIMENTO, '%Y-%m-%d %H:%M:%S'),
+                        try_strptime(substr(nasc_num, 1, 8), '%d%m%Y'),
+                        try_strptime(substr(nasc_num, 1, 8), '%Y%m%d')
+                    ) AS DATE
+                )
+        END AS DT_NASCIMENTO,
+
+        -- CONTRATACAO (dd/mm/aaaa é o principal)
+        CASE
+            WHEN DT_CONTRATACAO IS NULL OR trim(DT_CONTRATACAO) = '' THEN NULL
+            ELSE
+                CAST(
+                    coalesce(
+                        try_strptime(DT_CONTRATACAO, '%d/%m/%Y'),
+                        try_strptime(DT_CONTRATACAO, '%d/%m/%Y %H:%M:%S'),
+                        try_strptime(DT_CONTRATACAO, '%Y-%m-%d'),
+                        try_strptime(DT_CONTRATACAO, '%Y-%m-%d %H:%M:%S'),
+                        try_strptime(substr(cont_num, 1, 8), '%d%m%Y'),
+                        try_strptime(substr(cont_num, 1, 8), '%Y%m%d')
+                    ) AS DATE
+                )
+        END AS DT_CONTRATACAO,
+
+        -- CANCELAMENTO (dd/mm/aaaa é o principal)
+        CASE
+            WHEN DT_CANCELAMENTO IS NULL OR trim(DT_CANCELAMENTO) = '' THEN NULL
+            ELSE
+                CAST(
+                    coalesce(
+                        try_strptime(DT_CANCELAMENTO, '%d/%m/%Y'),
+                        try_strptime(DT_CANCELAMENTO, '%d/%m/%Y %H:%M:%S'),
+                        try_strptime(DT_CANCELAMENTO, '%Y-%m-%d'),
+                        try_strptime(DT_CANCELAMENTO, '%Y-%m-%d %H:%M:%S'),
+                        try_strptime(substr(canc_num, 1, 8), '%d%m%Y'),
+                        try_strptime(substr(canc_num, 1, 8), '%Y%m%d')
+                    ) AS DATE
+                )
+        END AS DT_CANCELAMENTO
+
+    FROM src
 )
-SELECT
-    -- Garante que produtos vazios não sumam no pivot
-    COALESCE(NULLIF(trim(CD_PLANO_RPS), ''), 'PRODUTO NÃO IDENTIFICADO') AS Produto,
-    REGISTRO_OPERADORA,
-    CD_MUNICIPIO,
-    TP_SEXO,
-
-    -- NASCIMENTO
-    CASE
-        WHEN nasc_num IS NULL OR nasc_num = '' THEN NULL
-        WHEN length(nasc_num) = 4 THEN CAST(nasc_num || '-01-01' AS DATE)
-        WHEN length(nasc_num) = 8 THEN
-            CAST(substr(nasc_num,5,4) || '-' || substr(nasc_num,3,2) || '-' || substr(nasc_num,1,2) AS DATE)
-        ELSE NULL
-    END AS DT_NASCIMENTO,
-
-    -- CONTRATACAO
-    CASE
-        WHEN cont_num IS NULL OR cont_num = '' THEN NULL
-        WHEN length(cont_num) = 8 THEN
-            CAST(substr(cont_num,5,4) || '-' || substr(cont_num,3,2) || '-' || substr(cont_num,1,2) AS DATE)
-        ELSE NULL
-    END AS DT_CONTRATACAO,
-
-    -- CANCELAMENTO
-    CASE
-        WHEN canc_num IS NULL OR canc_num = '' THEN NULL
-        WHEN length(canc_num) = 8 THEN
-            CAST(substr(canc_num,5,4) || '-' || substr(canc_num,3,2) || '-' || substr(canc_num,1,2) AS DATE)
-        ELSE NULL
-    END AS DT_CANCELAMENTO
-
-FROM src
+SELECT * FROM conv
 """)
 
-con.execute("DROP TABLE base_bruta")
-
-# 3) Validações rápidas (para não exportar vazio sem saber)
 print("--- Validação: datas após parsing ---")
 total = con.execute("select count(*) from base_limpa").fetchone()[0]
 cont_ok = con.execute("select count(*) from base_limpa where DT_CONTRATACAO is not null").fetchone()[0]
@@ -91,6 +131,7 @@ print("Min/Max DT_CANCELAMENTO:", minmax_canc)
 
 print("--- Passo 2: Exportando CSVs ---")
 
+# Agora inclui 3T2024 e 4T2024 (antes você realmente não tinha esses itens na lista)
 trimestres = [
     ('1T2018', '2018-03-31'), ('2T2018', '2018-06-30'), ('3T2018', '2018-09-30'), ('4T2018', '2018-12-31'),
     ('1T2019', '2019-03-31'), ('2T2019', '2019-06-30'), ('3T2019', '2019-09-30'), ('4T2019', '2019-12-31'),
@@ -98,13 +139,13 @@ trimestres = [
     ('1T2021', '2021-03-31'), ('2T2021', '2021-06-30'), ('3T2021', '2021-09-30'), ('4T2021', '2021-12-31'),
     ('1T2022', '2022-03-31'), ('2T2022', '2022-06-30'), ('3T2022', '2022-09-30'), ('4T2022', '2022-12-31'),
     ('1T2023', '2023-03-31'), ('2T2023', '2023-06-30'), ('3T2023', '2023-09-30'), ('4T2023', '2023-12-31'),
-    ('1T2024', '2024-03-31'), ('2T2024', '2024-06-30')
+    ('1T2024', '2024-03-31'), ('2T2024', '2024-06-30'),
+    ('3T2024', '2024-09-30'), ('4T2024', '2024-12-31')
 ]
 
 for nome, data_ref in trimestres:
     arquivo_csv = os.path.join(pasta_saida, f"ativos_{nome}.csv").replace("\\", "/")
 
-    # (Opcional, mas recomendado) Log de linhas elegíveis por trimestre
     elegiveis = con.execute(f"""
         SELECT count(*)
         FROM base_limpa
@@ -143,3 +184,4 @@ for nome, data_ref in trimestres:
 
 print("Trimestres gerados.")
 con.close()
+
