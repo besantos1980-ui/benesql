@@ -5,7 +5,7 @@ import os
 # CONFIGURAÇÕES
 # =========================
 ARQUIVO_ORIGEM = r"C:\inativos_ben\sib_ativo_SP.csv"
-PASTA_SAIDA = r"C:\inativos_ben\saida_trimestres"
+PASTA_SAIDA = r"C:\inativos_ben\saida_trimestres_ativo"
 BANCO_LOCAL = r"C:\inativos_ben\processamento_ans.db"
 
 # Se quiser manter base_bruta para inspeção depois, deixe True
@@ -187,7 +187,7 @@ idade_expr_tpl = """
 """
 
 for nome, data_ref in trimestres:
-    arquivo_csv = os.path.join(PASTA_SAIDA, f"ativos_{nome}.csv").replace("\\", "/")
+    arquivo_csv = os.path.join(PASTA_SAIDA, f"ativosatual_{nome}.csv").replace("\\", "/")
     idade_expr = idade_expr_tpl.format(data_ref=data_ref)
 
     # Log de elegíveis (evita gerar arquivo vazio "sem saber")
